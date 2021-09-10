@@ -107,15 +107,16 @@ soft_iv <- function(dat, rho, n_boot) {
     dd <- (bb - var_x) * (1 + ((bb - var_x) / (eta_x^2 * rho^2)))
     ee <- -(aa - sigma_xy) * (1 + ((bb - var_x) / (eta_x^2 * rho^2)))
     ff <- ((aa - sigma_xy)^2 / (eta_x^2 * rho^2)) + cc - var_y
-    # Return lesser root
-    alpha <- (-ee - sqrt(ee^2 - dd * ff)) / dd
-    return(alpha)
+    # Return roots
+    out <- data.frame(
+      alpha_lo = (-ee - sqrt(ee^2 - dd * ff)) / dd,
+      alpha_hi = (-ee + sqrt(ee^2 - dd * ff)) / dd 
+    )
+    return(out)
   }
   # Execute, export
-  alpha <- foreach(i = seq_len(n_boot), .combine = c) %do% boot_loop(i)
-  out <- data.frame(
-    'rho' = rho, 'alpha_hat' = mean(alpha), 'std.error' = sd(alpha)
-  )
+  out <- foreach(i = seq_len(n_boot), .combine = rbind) %do% boot_loop(i)
+  out$rho <- rho
   return(out)
 }
 # Loop over rhos in parallel
