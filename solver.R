@@ -71,6 +71,7 @@ df[pr_valid == 1] %>%
 
 # Boxplots
 df %>%
+  rename(lower = alpha_lo, upper = alpha_hi) %>%
   filter(z_rho == 0) %>%
   pivot_longer(c('lower', 'upper'), names_to = 'root', values_to = 'alpha') %>%
   ggplot(aes(as.factor(rho), alpha, fill = root)) + 
@@ -79,6 +80,20 @@ df %>%
   geom_hline(aes(yintercept = ACE), color = 'red', linetype = 'dashed') +
   theme_bw() +
   facet_grid(ace2 ~ r2_x) + 
+  labs(x = 'Unobserved Confounding', y = 'Average Causal Effect')
+
+df %>%
+  rename(lower = alpha_lo, upper = alpha_hi) %>%
+  mutate(ace_class = if_else(ACE > 0, 'ACE = 1', 'ACE = -1'),
+         rho_class = if_else(rho > 0, 'Positive Confounding', 
+                             'Negative Confounding')) %>%
+  pivot_longer(c('lower', 'upper'), names_to = 'root', values_to = 'alpha') %>%
+  ggplot(aes(as.factor(rho), alpha, color = root)) + 
+  geom_boxplot() + 
+  scale_color_d3() + 
+  geom_hline(aes(yintercept = ACE), color = 'red', linetype = 'dashed') +
+  theme_bw() +
+  facet_grid(ace_class ~ rho_class) + 
   labs(x = 'Unobserved Confounding', y = 'Average Causal Effect')
 
 
@@ -109,29 +124,55 @@ soft_iv <- function(dat, rho, n_boot) {
     ff <- ((aa - sigma_xy)^2 / (eta_x^2 * rho^2)) + cc - var_y
     # Return roots
     out <- data.frame(
-      alpha_lo = (-ee - sqrt(ee^2 - dd * ff)) / dd,
-      alpha_hi = (-ee + sqrt(ee^2 - dd * ff)) / dd 
+      lo = (-ee - sqrt(ee^2 - dd * ff)) / dd,
+      hi = (-ee + sqrt(ee^2 - dd * ff)) / dd 
     )
     return(out)
   }
   # Execute, export
-  out <- foreach(i = seq_len(n_boot), .combine = rbind) %do% boot_loop(i)
-  out$rho <- rho
+  alphas <- foreach(i = seq_len(n_boot), .combine = rbind) %do% boot_loop(i)
+  out <- data.frame(
+      'root' = c('lower', 'upper'), 
+     'alpha' = c(mean(alphas$lo), mean(alphas$hi)),
+        'se' = c(sd(alphas$lo), sd(alphas$hi)),
+    'rho_in' = rho
+  )
   return(out)
 }
 # Loop over rhos in parallel
-res <- foreach(rhos = seq(-0.99, 0.99, 0.01), .combine = rbind) %dopar% 
-  soft_iv(dat, rhos, n_boot = 200)
+loop_fn <- function(idx_b, alpha_b, z_rho_b, rho_b, r2_xb, r2_yb, prop_b) {
+  # Draw dataset
+  tmp <- sim_dat(
+    n = 1000, d_z = 4, z_cnt = TRUE, z_rho = z_rho_b,
+    rho = rho_b, alpha = alpha_b, r2_x = r2_xb, r2_y = r2_yb, 
+    prop_valid = prop_b, idx_b
+  )
+  # Loop over rhos
+  out <- foreach(rhos = seq(-0.99, 0.99, 0.02), .combine = rbind) %do%
+    soft_iv(tmp, rhos, n_boot = 100)
+  out <- out %>%
+    mutate('ACE' = alpha_b, 'z_rho' = z_rho_b, 'rho' = rho_b,  
+           'r2_x' = r2_xb, 'r2_y' = r2_yb, 'pr_valid' = prop_b)
+  return(out)
+}
+df <- foreach(alphas = c(-1, 1), .combine = rbind) %:%
+  foreach(rhos = c(-0.75, -0.5, -0.25, 0.25, 0.5, 0.75), .combine = rbind) %dopar% 
+  loop_fn(1, alphas, 0, rhos, 0.5, 0.5, 0)
 
 # Plot
-ggplot(res, aes(rho, alpha_hat)) + 
+df %>%
+  mutate(ace_class = if_else(ACE > 0, 'ACE = 1', 'ACE = -1'),
+         rho_class = if_else(rho > 0, 'Positive Confounding', 
+                             'Negative Confounding')) %>%
+  ggplot(aes(rho, alpha)) + 
   geom_point(size = 0.25) + 
   geom_line() + 
-  geom_errorbar(aes(ymin = alpha_hat - std.error, 
-                    ymax = alpha_hat + std.error)) +
-  geom_hline(yintercept = 1, color = 'red', linetype = 'dashed') + 
-  geom_vline(xintercept = 0.5, color = 'red', linetype = 'dashed') +
-  theme_bw() 
+  geom_errorbar(aes(ymin = alpha - se, ymax = alpha + se)) +
+  geom_hline(aes(yintercept = ACE), color = 'red', linetype = 'dashed') + 
+  geom_vline(aes(xintercept = rho), color = 'red', linetype = 'dashed') +
+  theme_bw() +
+  facet_grid(ace_class ~ rho_class) + 
+  labs(x = 'Unobserved Confounding', y = 'Average Causal Effect')
 
 # LOWER ROOT IS RIGHT WHEN CONFOUNDING IS POSITIVE!!!
 # UPPER ROOT IS RIGHT WHEN CONFOUNDING IS NEGATIVE!!!
