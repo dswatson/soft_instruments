@@ -32,7 +32,7 @@ loop_fn <- function(idx_b, alpha_b, z_rho_b, rho_b, r2_xb, r2_yb, prop_b) {
   tmp <- sim_dat(
     n = 2000, d_z = 4, z_cnt = TRUE, z_rho = z_rho_b,
     rho = rho_b, alpha = alpha_b, r2_x = r2_xb, r2_y = r2_yb, 
-    prop_valid = prop_b, idx_b
+    pr_valid = prop_b, idx_b
   )
   alphas <- soft_iv(tmp, rho_b)
   out <- data.table(
@@ -145,7 +145,7 @@ loop_fn <- function(idx_b, alpha_b, z_rho_b, rho_b, r2_xb, r2_yb, prop_b) {
   tmp <- sim_dat(
     n = 1000, d_z = 4, z_cnt = TRUE, z_rho = z_rho_b,
     rho = rho_b, alpha = alpha_b, r2_x = r2_xb, r2_y = r2_yb, 
-    prop_valid = prop_b, idx_b
+    pr_valid = prop_b, idx_b
   )
   # Loop over rhos
   out <- foreach(rhos = seq(-0.99, 0.99, 0.02), .combine = rbind) %do%
@@ -164,18 +164,313 @@ df %>%
   mutate(ace_class = if_else(ACE > 0, 'ACE = 1', 'ACE = -1'),
          rho_class = if_else(rho > 0, 'Positive Confounding', 
                              'Negative Confounding')) %>%
-  ggplot(aes(rho, alpha)) + 
+  filter(rho > 0) %>%
+  ggplot(aes(rho_in, alpha, color = root)) + 
+  geom_point(size = 0.25) + 
+  geom_line() + 
+  geom_errorbar(aes(ymin = alpha - se, ymax = alpha + se)) +
+  geom_hline(aes(yintercept = ACE), color = 'red', linetype = 'dashed') + 
+  geom_vline(aes(xintercept = rho), color = 'red', linetype = 'dashed') +
+  scale_color_d3() +
+  theme_bw() +
+  facet_grid(ace_class ~ rho) + 
+  labs(x = 'Unobserved Confounding', y = 'Average Causal Effect')
+
+# LOWER ROOT IS RIGHT WHEN CONFOUNDING IS POSITIVE!!!
+# UPPER ROOT IS RIGHT WHEN CONFOUNDING IS NEGATIVE!!!
+# Upshot: there's always one alpha per rho. If rho < 0, return upper root;
+# else, return lower root.
+
+
+
+
+
+
+
+
+
+loop_fn <- function(idx_b, alpha_b, z_rho_b, rho_b, r2_xb, r2_yb, prop_b) {
+  tmp <- sim_dat(
+    n = 2000, d_z = 4, z_cnt = TRUE, z_rho = z_rho_b,
+    rho = rho_b, alpha = alpha_b, r2_x = r2_xb, r2_y = r2_yb, 
+    pr_valid = prop_b, idx_b
+  )
+  f_x <- lm(x ~ ., data = select(tmp, -y))
+  tmp <- tmp %>% mutate(x = fitted(f_x))
+  f_y <- lm(y ~ ., data = tmp)
+  out <- data.table(
+    'rho' = rho_b, 'rho_hat' = cor(residuals(f_x), residuals(f_y)),
+    'alpha' = alpha_b, 'z_rho' = z_rho_b, 
+    'r2_x' = r2_xb, 'r2_y' = r2_yb, 'pr_valid' = prop_b
+  )
+  return(out)
+}
+# Execute in parallel
+df <- foreach(idxs = seq_len(100), .combine = rbind) %:%
+  foreach(alphas = c(-1, 1), .combine = rbind) %:%
+  foreach(z_rhos = c(0, 0.5), .combine = rbind) %:%
+  foreach(rhos = c(-0.75, -0.5, -0.25, 0.25, 0.5, 0.75), .combine = rbind) %:%
+  foreach(r2_xs = c(0.25, 0.75), .combine = rbind) %:%
+  foreach(r2_ys = c(0.25, 0.75), .combine = rbind) %:%
+  foreach(props = c(0, 0.5), .combine = rbind)  %dopar% 
+  loop_fn(idxs, alphas, z_rhos, rhos, r2_xs, r2_ys, props)
+
+df %>%
+  filter(z_rho == 0, pr_valid == 0) %>%
+  ggplot(aes(rho, rho_hat)) + 
+  geom_point(size = 0.1, alpha = 0.5) + 
+  geom_abline(slope = 1, intercept = 0, color = 'red') + 
+  theme_bw() + 
+  facet_grid(r2_x ~ r2_y)
+
+df %>%
+  filter(z_rho == 0.5, pr_valid == 0) %>%
+  ggplot(aes(rho, rho_hat, color = as.factor(alpha))) + 
+  geom_point(size = 0.1, alpha = 0.5) + 
+  geom_abline(slope = 1, intercept = 0, color = 'red') + 
+  scale_color_d3() +
+  theme_bw() + 
+  facet_grid(r2_x ~ r2_y)
+
+df %>%
+  filter(z_rho == 0, pr_valid == 0.5) %>%
+  ggplot(aes(rho, rho_hat)) + 
+  geom_point(size = 0.1, alpha = 0.5) + 
+  geom_abline(slope = 1, intercept = 0, color = 'red') + 
+  theme_bw() + 
+  facet_grid(r2_x ~ r2_y)
+
+df %>%
+  filter(z_rho == 0.5, pr_valid == 0.5) %>%
+  ggplot(aes(rho, rho_hat)) + 
+  geom_point(size = 0.1, alpha = 0.5) + 
+  geom_abline(slope = 1, intercept = 0, color = 'red') + 
+  theme_bw() + 
+  facet_grid(r2_x ~ r2_y)
+
+
+soft_iv <- function(dat, tau, rho) {
+  # Estimate eta_x
+  f1 <- lm(x ~ ., data = select(dat, -y))
+  eta_x <- sqrt(mean((residuals(f1)^2)))
+  # Estimate data covariance
+  Sigma_z <- cov(select(dat, starts_with('z')))
+  Theta_z <- solve(Sigma_z)
+  Theta_z2 <- Theta_z %*% Theta_z
+  Sigma_zy <- cov(select(dat, starts_with('z')), dat$y)
+  Sigma_zx <- cov(select(dat, starts_with('z')), dat$x)
+  Sigma_yz <- cov(dat$y, select(dat, starts_with('z')))
+  Sigma_xz <- cov(dat$x, select(dat, starts_with('z')))
+  sigma_xy <- cov(dat$x, dat$y)
+  var_x <- var(dat$x)
+  var_y <- var(dat$y)
+  # Define
+  aa <- as.numeric(Sigma_xz %*% Theta_z2 %*% Sigma_zx)
+  bb <- as.numeric(Sigma_xz %*% Theta_z2 %*% Sigma_zy)
+  cc <- as.numeric(Sigma_yz %*% Theta_z2 %*% Sigma_zx)
+  dd <- as.numeric(Sigma_xz %*% Theta_z %*% Sigma_zy)
+  ee <- as.numeric(Sigma_xz %*% Theta_z %*% Sigma_zx)
+  ff <- as.numeric(Sigma_yz %*% Theta_z %*% Sigma_zy)
+  # Find tau-feasible region
+  lo <- (bb - sqrt(aa * (tau - cc) + bb^2)) / aa
+  hi <- (bb + sqrt(aa * (tau - cc) + bb^2)) / aa
+  # Compute root as quadratic function of rho
+  gg <- (ee - var_x) * (1 + ((ee - var_x) / (eta_x^2 * rho^2)))
+  hh <- -(dd - sigma_xy) * (1 + ((ee - var_x) / (eta_x^2 * rho^2)))
+  ii <- ((dd - sigma_xy)^2 / (eta_x^2 * rho^2)) + ff - var_y
+  if (rho < 0) {
+    alpha <- (-hh + sqrt(hh^2 - gg * ii)) / gg 
+  } else {
+    alpha <- (-hh - sqrt(hh^2 - gg * ii)) / gg 
+  }
+  # Export
+  if (!(alpha >= lo & alpha <= hi)) alpha <- NA_real_ 
+  out <- data.frame('alpha' = alpha, 'tau_in' = tau, 'rho_in' = rho)
+  return(out)
+}
+# Loop over taus and rhos with fixed data
+dat <- sim_dat(
+  n = 1000, d_z = 4, z_cnt = TRUE, z_rho = 0,
+  rho = 0.5, alpha = 1, r2_x = 0.5, r2_y = 0.5, 
+  pr_valid = 0, 1
+)
+# Loop over rhos
+df <- foreach(taus = seq(0.01, 2, length.out = 100), .combine = rbind) %:%
+  foreach(rhos = seq(-0.99, 0.99, 0.02), .combine = rbind) %dopar%
+  soft_iv(dat, taus, rhos)
+
+df <- foreach(rhos = seq(-0.99, 0.99, 0.02), .combine = rbind) %dopar%
+  soft_iv(dat, tau = 0.13, rhos)
+
+
+df %>%
+  mutate(ace_class = if_else(ACE > 0, 'ACE = 1', 'ACE = -1'),
+         rho_class = if_else(rho > 0, 'Positive Confounding', 
+                             'Negative Confounding')) %>%
+  #filter(rho > 0) %>%
+  ggplot(aes(rho_in, alpha)) + 
   geom_point(size = 0.25) + 
   geom_line() + 
   geom_errorbar(aes(ymin = alpha - se, ymax = alpha + se)) +
   geom_hline(aes(yintercept = ACE), color = 'red', linetype = 'dashed') + 
   geom_vline(aes(xintercept = rho), color = 'red', linetype = 'dashed') +
   theme_bw() +
-  facet_grid(ace_class ~ rho_class) + 
+  facet_grid(ace_class ~ rho) + 
   labs(x = 'Unobserved Confounding', y = 'Average Causal Effect')
 
-# LOWER ROOT IS RIGHT WHEN CONFOUNDING IS POSITIVE!!!
-# UPPER ROOT IS RIGHT WHEN CONFOUNDING IS NEGATIVE!!!
+
+
+soft_iv <- function(dat, tau, rho, n_boot) {
+  boot_loop <- function(b) {
+    # Draw bootstrap sample
+    tmp <- dat[sample.int(nrow(dat), replace = TRUE)]
+    # Estimate eta_x
+    f1 <- lm(x ~ ., data = select(tmp, -y))
+    eta_x <- sqrt(mean((residuals(f1)^2)))
+    # Estimate data covariance
+    Sigma_z <- cov(select(tmp, starts_with('z')))
+    Theta_z <- solve(Sigma_z)
+    Theta_z2 <- Theta_z %*% Theta_z
+    Sigma_zy <- cov(select(tmp, starts_with('z')), tmp$y)
+    Sigma_zx <- cov(select(tmp, starts_with('z')), tmp$x)
+    Sigma_yz <- cov(tmp$y, select(tmp, starts_with('z')))
+    Sigma_xz <- cov(tmp$x, select(tmp, starts_with('z')))
+    sigma_xy <- cov(tmp$x, tmp$y)
+    var_x <- var(tmp$x)
+    var_y <- var(tmp$y)
+    # Define
+    aa <- as.numeric(Sigma_xz %*% Theta_z2 %*% Sigma_zx)
+    bb <- as.numeric(Sigma_xz %*% Theta_z2 %*% Sigma_zy)
+    cc <- as.numeric(Sigma_yz %*% Theta_z2 %*% Sigma_zx)
+    dd <- as.numeric(Sigma_xz %*% Theta_z %*% Sigma_zy)
+    ee <- as.numeric(Sigma_xz %*% Theta_z %*% Sigma_zx)
+    ff <- as.numeric(Sigma_yz %*% Theta_z %*% Sigma_zy)
+    # Find tau-feasible region
+    lo <- (bb - sqrt(aa * (tau - cc) + bb^2)) / aa
+    hi <- (bb + sqrt(aa * (tau - cc) + bb^2)) / aa
+    # Compute root as quadratic function of rho
+    gg <- (ee - var_x) * (1 + ((ee - var_x) / (eta_x^2 * rho^2)))
+    hh <- -(dd - sigma_xy) * (1 + ((ee - var_x) / (eta_x^2 * rho^2)))
+    ii <- ((dd - sigma_xy)^2 / (eta_x^2 * rho^2)) + ff - var_y
+    if (rho < 0) {
+      alpha <- (-hh + sqrt(hh^2 - gg * ii)) / gg 
+    } else {
+      alpha <- (-hh - sqrt(hh^2 - gg * ii)) / gg 
+    }
+    # Export
+    if (!(alpha >= lo & alpha <= hi)) alpha <- NA_real_ 
+  }
+  # Run bootstrap
+  alpha <- foreach(i = seq_len(n_boot), .combine = c) %do% boot_loop(i)
+  out <- data.frame(
+    'alpha' = mean(alpha, na.rm = TRUE), 'se' = sd(alpha, na.rm = TRUE), 
+    'tau_in' = tau, 'rho_in' = rho
+  )
+  return(out)
+}
+# Loop over taus and rhos with fixed data
+dat <- sim_dat(
+  n = 1000, d_z = 4, z_cnt = TRUE, z_rho = 0,
+  rho = 0.5, alpha = 1, r2_x = 0.5, r2_y = 0.5, 
+  pr_valid = 0, 1
+)
+
+
+loop_fn <- function(idx_b, alpha_b, z_rho_b, rho_b, r2_xb, r2_yb, prop_b) {
+  # Loop over rhos
+  out <- foreach(rhos = seq(-0.99, 0.99, 0.02), .combine = rbind) %do%
+    soft_iv(tmp, rhos, n_boot = 100)
+  out <- out %>%
+    mutate('ACE' = alpha_b, 'z_rho' = z_rho_b, 'rho' = rho_b,  
+           'r2_x' = r2_xb, 'r2_y' = r2_yb, 'pr_valid' = prop_b)
+  return(out)
+}
+df <- foreach(alphas = c(-1, 1), .combine = rbind) %:%
+  foreach(rhos = c(-0.75, -0.5, -0.25, 0.25, 0.5, 0.75), .combine = rbind) %dopar% 
+  loop_fn(1, alphas, 0, rhos, 0.5, 0.5, 0)
+
+df %>%
+  mutate(ace_class = if_else(ACE > 0, 'ACE = 1', 'ACE = -1'),
+         rho_class = if_else(rho > 0, 'Positive Confounding', 
+                             'Negative Confounding')) %>%
+  #filter(rho > 0) %>%
+  ggplot(aes(rho_in, alpha)) + 
+  geom_point(size = 0.25) + 
+  geom_line() + 
+  geom_errorbar(aes(ymin = alpha - se, ymax = alpha + se)) +
+  geom_hline(aes(yintercept = ACE), color = 'red', linetype = 'dashed') + 
+  geom_vline(aes(xintercept = rho), color = 'red', linetype = 'dashed') +
+  theme_bw() +
+  facet_grid(ace_class ~ rho) + 
+  labs(x = 'Unobserved Confounding', y = 'Average Causal Effect')
+
+
+
+
+
+# For selecting tau: 
+# regress y ~ Z to get an upper bound (this will overestimate the Z-signal)
+# regress y ~ Z + X to get a lower bound (this will underestimate the Z signal)
+# True L2 norm of gamma should be somewhere in between
+# You probably want to be conservative and underestimate tau...
+
+
+soft_iv <- function(dat, tau, rho, n_boot, bayes) {
+  boot_loop <- function(b) {
+    # Draw Dirichlet weights
+    wts <- rexp(nrow(dat))
+    wts <- (wts / sum(wts)) * nrow(dat)
+    # Estimate eta_x
+    f1 <- lm(x ~ ., data = select(dat, -y), weights = wts)
+    eta_x <- sqrt(weighted.mean(x = residuals(f1)^2, w = wts))
+    # Estimate data covariance
+    Sigma_z <- cov.wt(select(tmp, starts_with('z')), wt = wts)$cov
+    Theta_z <- solve(Sigma_z)
+    Theta_z2 <- Theta_z %*% Theta_z
+    Sigma_zy <- cov.wt(cbind(select(tmp, starts_with('z')), tmp$y), wt = wts)$cov
+    Sigma_zx <- cov.wt(cbind(select(tmp, starts_with('z')), tmp$x), wt = wts)$cov
+    Sigma_yz <- cov.wt(cbind(tmp$y, select(tmp, starts_with('z'))), wt = wts)$cov
+    Sigma_xz <- cov.wt(cbind(tmp$x, select(tmp, starts_with('z'))), wt = wts)$cov
+    sigma_xy <- cov.wt(cbind(tmp$x, tmp$y), wt = wts)$cov[2, 1]
+    var_x <- cov.wt(cbind(tmp$x, tmp$x), wt = wts)$cov[2, 1]
+    var_y <- cov.wt(cbind(tmp$y, tmp$y), wt = wts)$cov[2, 1]
+    # Define
+    aa <- as.numeric(Sigma_xz %*% Theta_z2 %*% Sigma_zx)
+    bb <- as.numeric(Sigma_xz %*% Theta_z2 %*% Sigma_zy)
+    cc <- as.numeric(Sigma_yz %*% Theta_z2 %*% Sigma_zx)
+    dd <- as.numeric(Sigma_xz %*% Theta_z %*% Sigma_zy)
+    ee <- as.numeric(Sigma_xz %*% Theta_z %*% Sigma_zx)
+    ff <- as.numeric(Sigma_yz %*% Theta_z %*% Sigma_zy)
+    # Find tau-feasible region
+    lo <- (bb - sqrt(aa * (tau - cc) + bb^2)) / aa
+    hi <- (bb + sqrt(aa * (tau - cc) + bb^2)) / aa
+    # Compute root as quadratic function of rho
+    gg <- (ee - var_x) * (1 + ((ee - var_x) / (eta_x^2 * rho^2)))
+    hh <- -(dd - sigma_xy) * (1 + ((ee - var_x) / (eta_x^2 * rho^2)))
+    ii <- ((dd - sigma_xy)^2 / (eta_x^2 * rho^2)) + ff - var_y
+    if (rho < 0) {
+      alpha <- (-hh + sqrt(hh^2 - gg * ii)) / gg 
+    } else {
+      alpha <- (-hh - sqrt(hh^2 - gg * ii)) / gg 
+    }
+    # Export
+    if (!(alpha >= lo & alpha <= hi)) alpha <- NA_real_ 
+  }
+  # Run bootstrap
+  alpha <- foreach(i = seq_len(n_boot), .combine = c) %do% boot_loop(i)
+  out <- data.frame(
+    'alpha' = mean(alpha, na.rm = TRUE), 'se' = sd(alpha, na.rm = TRUE), 
+    'tau_in' = tau, 'rho_in' = rho
+  )
+  return(out)
+}
+
+
+
+
+
+
+
 
 
 
