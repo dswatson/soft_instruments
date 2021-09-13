@@ -108,3 +108,103 @@ fwrite(sim_idx, './simulations/sim_idx.csv')
 
 # Problem: pr_z imposes some constraints on Sigma_z in the binomial case,
 # as correlations cannot exceed upper limits imposed by expectations
+
+# Do we really want to bound beta and gamma away from 0?
+
+# Simulate data (inspired by Hartwig et al., 2017)
+sim_dat <- function(n, d_z, z_cnt, z_rho, rho, alpha, r2_x, r2_y, pr_valid, s_idx) {
+  # What proportion are valid?
+  valid_cnt <- round(pr_valid * d_z)
+  pr_valid <- valid_cnt / d_z
+  # Draw Z's
+  if (z_rho != 0) {
+    Sigma_z <- toeplitz(z_rho^(0:(d_z - 1)))
+  }
+  if (z_cnt) {
+    z <- matrix(rnorm(n * d_z), ncol = d_z)
+    if (z_rho == 0) {
+      Sigma_z <- diag(rep(1, d_z))
+    } else {
+      z <- z %*% chol(Sigma_z)
+    }
+  } else {
+    pr_z <- runif(d_z, min = 0.1, max = 0.9)
+    var_z <- pr_z * (1 - pr_z)
+    if (z_rho == 0) {
+      z <- sapply(pr_z, function(p) rbinom(n, 1, p))
+      Sigma_z <- diag(var_z)
+    } else {
+      z <- draw.correlated.binary(no.row = n, d = d_z, prop.vec = pr_z, 
+                                  corr.mat = Sigma_z)
+      Sigma_z <- diag(sqrt(var_z)) %*% Sigma_z %*% diag(sqrt(var_z))
+    }
+  }
+  colnames(z) <- paste0('z', seq_len(d_z))
+  # Simulate standardized residual vectors
+  Sigma_eps <- matrix(c(1, rho, rho, 1), ncol = 2)
+  eps <- matrix(rnorm(n * 2), ncol = 2)
+  eps <- eps %*% chol(Sigma_eps)
+  # Draw random weights for Z 
+  # Then calculate eta_x from r2_x
+  beta <- runif(d_z, min = 0.1, 1) / d_z
+  beta <- beta * sample(c(-1, 1), size = d_z, replace = TRUE)
+  var_x <- as.numeric(t(beta) %*% Sigma_z %*% beta) / r2_x 
+  eta_x <- sqrt(var_x * (1 - r2_x))
+  x <- as.numeric(z %*% beta) + eps[, 1] * eta_x
+  # And again for Y, although we need to solve a quadratic equation for eta_y
+  gamma <- runif(d_z, min = 0.1, 1) / (d_z * (1 - pr_valid))
+  gamma <- gamma * sample(c(-1, 1), size = d_z, replace = TRUE)
+  if (pr_valid > 0) {
+    gamma[sample(d_z, valid_cnt)] <- 0
+  }
+  var_mu <- as.numeric(t(gamma) %*% Sigma_z %*% gamma) + alpha^2 * var_x + 
+    2 * alpha * as.numeric(beta %*% Sigma_z %*% gamma)
+  var_y <- var_mu / r2_y
+  b <- 2 * alpha * rho * eta_x
+  eta_y <- (-b + sqrt(b^2 - 4 * (var_mu - var_y))) / 2
+  y <- as.numeric(z %*% gamma) + x * alpha + eps[, 2] * eta_y
+  # Export results
+  dat <- data.table(z, 'x' = x, 'y' = y)
+  return(list('dat' = dat, 'gamma' = gamma))
+}
+
+
+# Execute in parallel
+foreach(aa = sim_idx$idx) %dopar%
+  sim_dat(n = 1e4, d_z = 8, z_cnt = TRUE, z_rho = sim_idx$z_rho[aa],
+          rho = sim_idx$rho[aa], alpha = 1, r2_x = 0.5, r2_y = 0.5, 
+          pr_valid = sim_idx$pr_valid[aa], aa)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
