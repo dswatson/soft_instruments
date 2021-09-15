@@ -112,96 +112,63 @@ fwrite(sim_idx, './simulations/sim_idx.csv')
 # Do we really want to bound beta and gamma away from 0?
 
 # Simulate data (inspired by Hartwig et al., 2017)
-sim_dat <- function(n, d_z, z_cnt, z_rho, rho, alpha, r2_x, r2_y, pr_valid, s_idx) {
+sim_dat <- function(n, d_z, z_cnt, rho, alpha, r2_x, r2_y, pr_valid, s_idx) {
   # What proportion are valid?
   valid_cnt <- round(pr_valid * d_z)
   pr_valid <- valid_cnt / d_z
   # Draw Z's
-  if (z_rho != 0) {
-    Sigma_z <- toeplitz(z_rho^(0:(d_z - 1)))
-  }
   if (z_cnt) {
-    z <- matrix(rnorm(n * d_z), ncol = d_z)
-    if (z_rho == 0) {
-      Sigma_z <- diag(rep(1, d_z))
-    } else {
-      z <- z %*% chol(Sigma_z)
-    }
-  } else {
+    var_z <- 1 / d_z
+    z <- matrix(rnorm(n * d_z, sd = sqrt(var_z)), ncol = d_z)
+    Sigma_z <- diag(var_z, d_z)
+  } else{
     pr_z <- runif(d_z, min = 0.1, max = 0.9)
     var_z <- pr_z * (1 - pr_z)
-    if (z_rho == 0) {
-      z <- sapply(pr_z, function(p) rbinom(n, 1, p))
-      Sigma_z <- diag(var_z)
-    } else {
-      z <- draw.correlated.binary(no.row = n, d = d_z, prop.vec = pr_z, 
-                                  corr.mat = Sigma_z)
-      Sigma_z <- diag(sqrt(var_z)) %*% Sigma_z %*% diag(sqrt(var_z))
-    }
+    z <- sapply(pr_z, function(p) rbinom(n, 1, p))
+    Sigma_z <- diag(var_z)
   }
   colnames(z) <- paste0('z', seq_len(d_z))
   # Simulate standardized residual vectors
   Sigma_eps <- matrix(c(1, rho, rho, 1), ncol = 2)
   eps <- matrix(rnorm(n * 2), ncol = 2)
   eps <- eps %*% chol(Sigma_eps)
-  # Draw random weights for Z 
-  # Then calculate eta_x from r2_x
-  beta <- runif(d_z, min = 0.1, 1) / d_z
-  beta <- beta * sample(c(-1, 1), size = d_z, replace = TRUE)
-  var_x <- as.numeric(t(beta) %*% Sigma_z %*% beta) / r2_x 
+  # Draw random weights for Z, set var_mu = r2_x
+  beta <- runif(d_z, min = -1, 1)
+  fn <- function(lambda) {
+    var_mu <- as.numeric(t(beta * lambda) %*% Sigma_z %*% (beta * lambda))
+    (var_mu - r2_x)^2
+  }
+  lambda <- optim(1, fn, method = 'Brent', lower = 0, upper = 10)$par
+  beta <- beta * lambda
+  var_x <- 1
   eta_x <- sqrt(var_x * (1 - r2_x))
   x <- as.numeric(z %*% beta) + eps[, 1] * eta_x
   # And again for Y, although we need to solve a quadratic equation for eta_y
-  gamma <- runif(d_z, min = 0.1, 1) / (d_z * (1 - pr_valid))
-  gamma <- gamma * sample(c(-1, 1), size = d_z, replace = TRUE)
+  gamma <- runif(d_z, min = -1, 1) / (d_z * (1 - pr_valid))
   if (pr_valid > 0) {
     gamma[sample(d_z, valid_cnt)] <- 0
   }
+  fn <- function(lambda) {
+    var_mu <- as.numeric(t(gamma * lambda) %*% Sigma_z %*% (gamma * lambda)) +
+      alpha^2 * var_x + 2 * alpha * as.numeric(beta %*% Sigma_z %*% (gamma * lambda))
+    (var_mu - r2_y)^2
+  }
+  lambda <- optim(1, fn, method = 'Brent', lower = 0, upper = 10)$par
+  gamma <- gamma * lambda
   var_mu <- as.numeric(t(gamma) %*% Sigma_z %*% gamma) + alpha^2 * var_x + 
     2 * alpha * as.numeric(beta %*% Sigma_z %*% gamma)
-  var_y <- var_mu / r2_y
+  var_y <- 1
   b <- 2 * alpha * rho * eta_x
   eta_y <- (-b + sqrt(b^2 - 4 * (var_mu - var_y))) / 2
   y <- as.numeric(z %*% gamma) + x * alpha + eps[, 2] * eta_y
   # Export results
   dat <- data.table(z, 'x' = x, 'y' = y)
-  return(list('dat' = dat, 'gamma' = gamma))
+  params <- list(
+    'alpha' = alpha, 'beta' = beta, 'gamma' = gamma, 'eta_x' = eta_x, 
+    'eta_y' = eta_y, 'rho' = rho, 'r2_x' = r2_x, 'r2_y' = r2_y
+  )
+  return(list('dat' = dat, 'params' = params))
 }
-
-
-# Execute in parallel
-foreach(aa = sim_idx$idx) %dopar%
-  sim_dat(n = 1e4, d_z = 8, z_cnt = TRUE, z_rho = sim_idx$z_rho[aa],
-          rho = sim_idx$rho[aa], alpha = 1, r2_x = 0.5, r2_y = 0.5, 
-          pr_valid = sim_idx$pr_valid[aa], aa)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
