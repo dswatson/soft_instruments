@@ -36,7 +36,7 @@ soft_iv <- function(dat, tau, n_rho, n_boot, bayes, parallel) {
       if (bayes) {
         # Draw Dirichlet weights
         wts <- rexp(n)
-        wts <- (wts / sum(wts)) * b
+        wts <- (wts / sum(wts)) * n
         # Estimate eta_x
         f1 <- lm(x ~ ., data = select(dat, -y), weights = wts)
         eta_x <- sqrt(weighted.mean(x = residuals(f1)^2, w = wts))
@@ -111,23 +111,22 @@ soft_iv <- function(dat, tau, n_rho, n_boot, bayes, parallel) {
 }
 
 # Loop over different data configurations
-loop_fn <- function(idx_b, alpha_b, z_rho_b, rho_b, r2_xb, r2_yb, prop_b) {
+loop_fn <- function(idx_b, alpha_b, rho_b, r2_xb, r2_yb, prop_b) {
   tmp <- sim_dat(
-    n = 1000, d_z = 4, z_cnt = TRUE, z_rho = z_rho_b,
-    rho = rho_b, alpha = alpha_b, r2_x = r2_xb, r2_y = r2_yb, 
-    pr_valid = prop_b, idx_b
+    n = 1000, d_z = 4, z_cnt = TRUE, rho = rho_b, alpha = alpha_b, 
+    r2_x = r2_xb, r2_y = r2_yb, pr_valid = prop_b, idx_b
   )
   # Assume oracle access to tau
   soft_iv(tmp$dat, sum(tmp$params$gamma^2), n_rho = 100, 
-          n_boot = 200, bayes = FALSE, parallel = FALSE) %>%
-    mutate('ACE' = alpha_b, 'z_rho' = z_rho_b, 'rho' = rho_b,  
-           'r2_x' = r2_xb, 'r2_y' = r2_yb, 'pr_valid' = prop_b) %>%
+          n_boot = 200, bayes = TRUE, parallel = FALSE) %>%
+    mutate('ACE' = alpha_b, 'rho' = rho_b,  'r2_x' = r2_xb, 'r2_y' = r2_yb, 
+           'pr_valid' = prop_b) %>%
     return(.)
 }
 # Execute in parallel
-df <- foreach(alphas = c(-2, -1, 1, 2), .combine = rbind) %:%
-  foreach(rhos = c(-0.75, -0.5, -0.25, 0.25, 0.5, 0.75), .combine = rbind) %dopar%
-  loop_fn(1, alphas, 0, rhos, 0.75, 0.75, 0)
+df <- foreach(alphas = c(-0.5, -0.25, 0.25, 0.5), .combine = rbind) %:%
+  foreach(rhos = c(-2/3, -1/3, 1/3, 2/3), .combine = rbind) %dopar%
+  loop_fn(1, alphas, rhos, 0.5, 0.5, 0)
 
 # Plot results
 df %>%
