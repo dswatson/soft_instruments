@@ -26,7 +26,6 @@ soft_iv <- function(dat, tau, n_rho, n_boot, bayes, parallel) {
   n <- nrow(dat)
   p <- ncol(dat)
   d_z <- sum(grepl('z', colnames(dat)))
-  rhos <- seq(-0.99, 0.99, length.out = n_rho)
   boot_loop <- function(b) {
     if (b == 0) {
       Sigma <- cov(dat)
@@ -34,7 +33,7 @@ soft_iv <- function(dat, tau, n_rho, n_boot, bayes, parallel) {
       if (bayes) {
         # Draw Dirichlet weights
         wts <- rexp(n)
-        wts <- (wts / sum(wts)) * b
+        wts <- (wts / sum(wts)) * n
         # Estimate eta_x
         f1 <- lm(x ~ ., data = select(dat, -y), weights = wts)
         eta_x <- sqrt(weighted.mean(x = residuals(f1)^2, w = wts))
@@ -68,9 +67,9 @@ soft_iv <- function(dat, tau, n_rho, n_boot, bayes, parallel) {
     ee <- as.numeric(Sigma_xz %*% Theta_z %*% Sigma_zx)
     ff <- as.numeric(Sigma_yz %*% Theta_z %*% Sigma_zy)
     # Find tau-feasible region
-    lo <- (bb - sqrt(aa * (tau - cc) + bb^2)) / aa
-    hi <- (bb + sqrt(aa * (tau - cc) + bb^2)) / aa
-    # Compute alpha as function of rho
+    lo_tau <- (bb - sqrt(aa * (tau - cc) + bb^2)) / aa
+    hi_tau <- (bb + sqrt(aa * (tau - cc) + bb^2)) / aa
+    # Find rho-feasible region
     alpha_fn <- function(rho) {
       gg <- (ee - var_x) * (1 + ((ee - var_x) / (eta_x^2 * rho^2)))
       hh <- -(dd - sigma_xy) * (1 + ((ee - var_x) / (eta_x^2 * rho^2)))
@@ -82,13 +81,41 @@ soft_iv <- function(dat, tau, n_rho, n_boot, bayes, parallel) {
       }
       return(alpha)
     }
-    alphas <- sapply(rhos, function(r) alpha_fn(r))
-    alphas <- ifelse(alphas >= lo & alphas <= hi, alphas, NA_real_)
-    return(alphas)
+    lo_rho <- alpha_fn(0.9999)
+    hi_rho <- alpha_fn(-0.9999)
+    # Find the tightest bound
+    alpha_min <- max(c(lo_tau, lo_rho))
+    alpha_max <- min(c(hi_tau, hi_rho))
+    # Compute corresponding values of rho
+    rho_fn <- function(alpha) {
+      RETURN_RHO
+    }
+    rho_min <- rho_fn(alpha_max)
+    rho_max <- rho_fn(alpha_min)
+    # Optionally return rho-alpha grid
+    if (is.null(n_rho)) {
+      out <- data.frame('alpha' = c(alpha_min, alpha_max), 
+                        'rho' = c(rho_max, rho_min))
+    } else {
+      rhos <- seq(rho_max, rho_min, length.out = n_rho)
+      out <- data.frame('alpha' = sapply(rhos, function(r) alpha_fn(r)), 
+                        'rho' = rhos)
+    }
+    return(out)
   }
   # Run bootstrap
-  if (is.null(n_boot) | n_boot == 0) {
-    alpha <- boot_loop(0)
+  if (is.null(n_boot)) {
+    boot_out <- boot_loop(0)
+    if(is.null(n_rho)) {
+      out <- data.frame('bound' = c('lower', 'upper'),
+                        'alpha' = boot_out$alpha, 
+                        'se' = NA_real_,
+                        'rho' = boot_out$rho)
+    } else {
+      
+      
+      
+    }
     out <- data.frame('alpha' = alpha, 'se' = NA_real_, 
                       'tau_in' = tau, 'rho_in' = rhos)
     out <- out[!is.na(out$alpha), ]
@@ -139,6 +166,7 @@ df %>%
   facet_grid(ACE ~ rho, scales = 'free_y') + 
   labs(x = 'Unobserved Confounding', y = 'Average Causal Effect')
 
+# Can we write a rho_fn that takes alpha as input?
 
 
 
