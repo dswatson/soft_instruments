@@ -16,13 +16,14 @@ set.seed(123, kind = "L'Ecuyer-CMRG")
 
 # Define soft_iv function
 #' @param dat Input dataset with instruments z, treatment x, and outcome y.
-#' @param tau Upper bound on the L2 norm of gamma.
+#' @param p Power of the gamma norm.
+#' @param tau Upper bound on the gamma norm.
 #' @param n_rho Number of rhos to evaluate.
 #' @param n_boot Number of bootstrap replicates.
 #' @param bayes Use Bayesian bootstrap?
 #' @param parallel Compute bootstrap estimates in parallel?
 
-soft_iv <- function(dat, tau, n_rho, n_boot, bayes, parallel) {
+soft_iv <- function(dat, p, tau, n_rho, n_boot, bayes, parallel) {
   # Prelimz
   n <- nrow(dat)
   p <- ncol(dat)
@@ -64,51 +65,55 @@ soft_iv <- function(dat, tau, n_rho, n_boot, bayes, parallel) {
     var_x <- Sigma[p - 1, p - 1]
     var_y <- Sigma[p, p]
     # Define
-    aa <- as.numeric(Sigma_xz %*% Theta_z2 %*% Sigma_zx)
-    bb <- as.numeric(Sigma_xz %*% Theta_z2 %*% Sigma_zy)
-    cc <- as.numeric(Sigma_yz %*% Theta_z2 %*% Sigma_zx)
     dd <- as.numeric(Sigma_xz %*% Theta_z %*% Sigma_zy)
     ee <- as.numeric(Sigma_xz %*% Theta_z %*% Sigma_zx)
     ff <- as.numeric(Sigma_yz %*% Theta_z %*% Sigma_zy)
-    # Find tau-feasible region
-    lo <- (bb - sqrt(aa * (tau - cc) + bb^2)) / aa
-    hi <- (bb + sqrt(aa * (tau - cc) + bb^2)) / aa
-    # Compute alpha as function of rho
-    alpha_fn <- function(rho) {
-      gg <- (ee - var_x) * (1 + ((ee - var_x) / (eta_x^2 * rho^2)))
-      hh <- -(dd - sigma_xy) * (1 + ((ee - var_x) / (eta_x^2 * rho^2)))
-      ii <- ((dd - sigma_xy)^2 / (eta_x^2 * rho^2)) + ff - var_y
-      if (rho < 0) {
-        alpha <- (-hh + sqrt(hh^2 - gg * ii)) / gg 
+    # Compute alpha and gamma as functions of rho
+    from_rho <- function(rho_in) {
+      gg <- (ee - var_x) * (1 + ((ee - var_x) / (eta_x^2 * rho_in^2)))
+      hh <- -(dd - sigma_xy) * (1 + ((ee - var_x) / (eta_x^2 * rho_in^2)))
+      ii <- ((dd - sigma_xy)^2 / (eta_x^2 * rho_in^2)) + ff - var_y
+      if (rho_in < 0) {
+        alpha_hat <- as.numeric((-hh + sqrt(hh^2 - gg * ii)) / gg)
       } else {
-        alpha <- (-hh - sqrt(hh^2 - gg * ii)) / gg 
+        alpha_hat <- as.numeric((-hh - sqrt(hh^2 - gg * ii)) / gg)
       }
-      return(alpha)
+      gamma_hat <- as.numeric(Theta_z %*% (Sigma_zy - alpha_hat * Sigma_zx))
+      # Take the norm
+      norm <- (sum(abs(gamma_hat)^p))^(1 / p)
+      out <- data.frame(
+        'rho' = rho_in, 'alpha' = alpha_hat, 'norm' = norm
+      )
+      return(out)
     }
-    alphas <- sapply(rhos, function(r) alpha_fn(r))
-    alphas <- ifelse(alphas >= lo & alphas <= hi, alphas, NA_real_)
-    return(alphas)
+    rho_loop <- foreach(r = rhos, .combine = rbind) %do% from_rho(r) %>%
+      filter(norm <= tau) %>%
+      na.omit(.)
+    out <- data.table(
+      'b' = b,
+      'bound' = c('lo', 'hi'), 
+      'alpha' = c(min(rho_loop$alpha), max(rho_loop$alpha))
+    )
+    return(out)
   }
   # Run bootstrap
-  if (is.null(n_boot) | n_boot == 0) {
-    alpha <- boot_loop(0)
-    out <- data.frame('alpha' = alpha, 'se' = NA_real_, 
-                      'tau_in' = tau, 'rho_in' = rhos)
-    out <- out[!is.na(out$alpha), ]
+  if (parallel) {
+    boots <- foreach(i = seq_len(n_boot), .combine = rbind) %dopar% 
+      boot_loop(i)
   } else {
-    if (parallel) {
-      alpha <- foreach(i = seq_len(n_boot), .combine = cbind) %dopar% 
-        boot_loop(i)
-    } else {
-      alpha <- sapply(seq_len(n_boot), function(i) boot_loop(i))
-    }
-    out <- data.frame('alpha' = rowMeans(alpha, na.rm = TRUE), 
-                      'se' = rowSds(alpha, na.rm = TRUE), 
-                      'tau_in' = tau, 'rho_in' = rhos)
-    out <- na.omit(out)
+    boots <- foreach(i = seq_len(n_boot), .combine = rbind) %do% 
+      boot_loop(i)
   }
+  out <- data.frame(
+    'bound' = c('lo', 'hi'),
+    'alpha' = c(boots[bound == 'lo', mean(alpha)], 
+                boots[bound == 'hi', mean(alpha)]),
+    'se' = c(boots[bound == 'lo', sd(alpha)],
+             boots[bound == 'hi', sd(alpha)])
+  )
   return(out)
 }
+
 
 # Loop over different data configurations
 loop_fn <- function(idx_b, alpha_b, rho_b, r2_xb, r2_yb, prop_b) {
