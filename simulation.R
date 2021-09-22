@@ -118,13 +118,13 @@ sim_dat <- function(n, d_z, z_rho, rho, alpha, r2_x, r2_y, pr_valid, s_idx) {
   pr_valid <- valid_cnt / d_z
   # Draw Z's
   var_z <- 1 / d_z
-  z <- matrix(rnorm(n * d_z, sd = sqrt(var_z)), ncol = d_z)
+  z <- matrix(rnorm(n * d_z), ncol = d_z)
   if (z_rho == 0) {
     Sigma_z <- diag(var_z, d_z)
   } else {
-    Sigma_z <- toeplitz(z_rho^(0:(d_z - 1)))
-    z <- z %*% chol(Sigma_z)
+    Sigma_z <- toeplitz(z_rho^(0:(d_z - 1))) * var_z
   }
+  z <- z %*% chol(Sigma_z)
   colnames(z) <- paste0('z', seq_len(d_z))
   # Simulate standardized residual vectors
   rho <- rho * sample(c(-1, 1), 1)
