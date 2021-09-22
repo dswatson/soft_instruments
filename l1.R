@@ -66,20 +66,17 @@ r2_x <- 0.75
 r2_y <- 0.75
 d_z <- 4
 
-loop_fn <- function(d_z, rho_z, rho, alpha, r2_x, r2_y) {
+loop_fn <- function(d_z, rho_z, rho, alpha, r2_x, r2_y, n_rho) {
   ### STEP 1: SIMULATE PARAMETERS TO CONFORM TO STRUCTURAL ASSUMPTIONS ###
   # Covariance of Z
   if (rho_z == 0) {
     Sigma_z <- diag(1, d_z)
   } else {
     Sigma_z <- toeplitz(rho_z^(0:(d_z - 1)))
-    z <- z %*% chol(Sigma_z)
   }
   colnames(Sigma_z) <- paste0('z', seq_len(d_z))
   # Simulate standardized residual vectors
   Sigma_eps <- matrix(c(1, rho, rho, 1), ncol = 2)
-  eps <- matrix(rnorm(n * 2), ncol = 2)
-  eps <- eps %*% chol(Sigma_eps)
   # Set beta to enforce r2_x
   beta <- runif(d_z, min = -1, max = 1)
   fn <- function(lambda) {
@@ -90,6 +87,15 @@ loop_fn <- function(d_z, rho_z, rho, alpha, r2_x, r2_y) {
   beta <- beta * lambda
   var_x <- 1
   eta_x <- sqrt(var_x * (1 - r2_x))
+  # Set alpha to account for a third, a half or two thirds of signal variance
+  if (alpha == 'low') {
+    alpha <- sqrt(r2_y / 3)
+  } else if (alpha == 'med') {
+    alpha <- sqrt(r2_y / 2) 
+  } else if (alpha == 'high') {
+    alpha <- sqrt(2 * r2_y / 3) 
+  }
+  alpha <- alpha * sample(c(-1, 1), 1)
   # Set gamma to enforce r2_y
   gamma <- runif(d_z, min = -1, max = 1)
   fn <- function(lambda) {
@@ -103,6 +109,7 @@ loop_fn <- function(d_z, rho_z, rho, alpha, r2_x, r2_y) {
   var_y <- 1
   b <- 2 * alpha * rho * eta_x
   eta_y <- (-b + sqrt(b^2 - 4 * (var_mu - var_y))) / 2
+  # Other covariance parameters
   Theta_z <- solve(Sigma_z)
   Theta_z2 <- Theta_z %*% Theta_z
   Sigma_zx <- Sigma_z %*% beta
@@ -129,12 +136,12 @@ loop_fn <- function(d_z, rho_z, rho, alpha, r2_x, r2_y) {
     gamma_hat <- as.numeric(Theta_z %*% (Sigma_zy - alpha_hat * Sigma_zx))
     out <- data.frame(
       'rho_in' = rho_in, 'alpha_hat' = alpha_hat,
-      'l1' = sum(abs(gamma_hat)), 'l2' = sum(gamma_hat^2)
+      'l1' = sum(abs(gamma_hat)), 'l2' = sqrt(sum(gamma_hat^2))
     )
     return(out)
   }
   # Loop over rhos
-  rhos <- seq(-0.99, 0.99, length.out = 200)
+  rhos <- seq(-0.99, 0.99, length.out = n_rho)
   out <- foreach(r = rhos, .combine = rbind) %do% from_rho(r)
   # Record configurations
   out <- out %>%
@@ -142,11 +149,9 @@ loop_fn <- function(d_z, rho_z, rho, alpha, r2_x, r2_y) {
            'r2_x' = r2_x, 'r2_y' = r2_y)
   return(out)
 }
-df <- foreach(d_zs = c(2, 3, 4), .combine = rbind) %:%
-  foreach(rho_zs = c(0, 0.5), .combine = rbind) %:%
-  foreach(rhos = c(-0.75, -0.25, 0.25, 0.75), .combine = rbind) %:%
-  foreach(alphas = c(-0.2, 0.2), .combine = rbind) %dopar%
-  loop_fn(1e4, d_zs, rho_zs, rhos, alphas, 0.5, 0.5)
+df <- foreach(rhos = c(-0.75, -0.5, -0.25, 0.25, 0.5, 0.75), .combine = rbind) %:%
+  foreach(alphas = c('low', 'med', 'high'), .combine = rbind) %dopar%
+  loop_fn(d_z = 4, rho_z = 0, rhos, alphas, r2_x = 0.75, r2_y = 0.75, n_rho = 500)
 
 # Plot results
 df %>%
@@ -168,7 +173,22 @@ df %>%
   facet_grid(d_z ~ rho)
 
 
+df %>%
+  filter(alpha == 0.5) %>%
+  pivot_longer(starts_with('l'), names_to = 'p', values_to = 'norm') %>%
+  ggplot(aes(alpha_hat, norm, color = p)) + 
+  scale_color_d3() + 
+  geom_path() + 
+  theme_bw() + 
+  facet_wrap(~ rho)
 
+out %>%
+  pivot_longer(starts_with('l'), names_to = 'p', values_to = 'norm') %>%
+  ggplot(aes(alpha_hat, norm, color = p)) + 
+  scale_color_d3() + 
+  geom_path() + 
+  geom_vline(xintercept = bb/aa, linetype = 'dashed', color = 'red') +
+  theme_bw() 
 
 
 
@@ -274,6 +294,9 @@ alpha = Sigma_zy / Sigma_zx
 alpha <- mean(Sigma_zy / Sigma_zx) # ???
 
 
+# Contrast this with Bayesian approaches: rather than putting priors on 
+# particular gammas, we can just set hard constraints and use Bayesian 
+# or other inference methods for bounds
 
 
 
